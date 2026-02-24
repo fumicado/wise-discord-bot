@@ -171,6 +171,9 @@ export async function generateResponse(userMessage, context, onProgress) {
     // セッション継続
     if (session?.session_id) {
       queryOptions.resume = session.session_id;
+      console.log(`[Agent] Resuming session: ${session.session_id}`);
+    } else {
+      console.log('[Agent] New session (no previous session found)');
     }
 
     // Agent SDK 実行
@@ -224,10 +227,29 @@ export async function generateResponse(userMessage, context, onProgress) {
   } catch (err) {
     console.error('[Agent] Error:', err);
 
-    // セッション破損の可能性 → リセット
+    // セッション破損の可能性 → リセットして新規セッションでリトライ
     if (err.message?.includes('session') || err.message?.includes('resume')) {
-      console.warn('[Agent] Session error, resetting...');
+      console.warn('[Agent] Session error, resetting and retrying...');
       await db.resetSession(userId, channelId);
+
+      try {
+        // resumeなしでリトライ
+        delete queryOptions.resume;
+        let retryResponse = '';
+        for await (const event of query({ prompt: userMessage, options: queryOptions })) {
+          if ('type' in event) {
+            if (event.type === 'result' && 'result' in event) {
+              retryResponse = event.result;
+              if ('session_id' in event) {
+                await db.upsertSession(userId, channelId, event.session_id);
+              }
+            }
+          }
+        }
+        if (retryResponse) return retryResponse;
+      } catch (retryErr) {
+        console.error('[Agent] Retry also failed:', retryErr);
+      }
     }
 
     return 'お応えに少々手間取っております。もう一度お声がけくださいませ 🎩';
