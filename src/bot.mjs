@@ -29,6 +29,61 @@ import { parseIssueCommand, createIssue, runDevPipeline, formatIssueCreated, for
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ============================================================
+// 自発参加ロジック
+// ============================================================
+// チャンネルごとの最終自発参加時刻
+const lastVolunteerTime = new Map();
+// WISEが最近会話に参加したチャンネル（メンション応答含む）
+const recentActiveChannels = new Map();
+
+const VOLUNTEER_COOLDOWN = 10 * 60 * 1000;  // 同一チャンネルで10分に1回まで
+const ACTIVE_WINDOW = 30 * 60 * 1000;       // 30分以内に会話したチャンネルのみ
+
+// AI・技術キーワード（自発参加のトリガー）
+const TECH_KEYWORDS = /(?:claude|gpt|openai|anthropic|agent|llm|embedding|rag|mcp|fine.?tun|プロンプト|ハルシネーション|トークン|ベクトル|推論|学習|モデル)/i;
+
+/**
+ * 自発参加すべきか判定
+ * 条件: 最近会話に参加した + 技術的な質問っぽい + クールダウン経過
+ */
+function shouldVolunteerResponse(message) {
+  const channelId = message.channelId;
+  const now = Date.now();
+
+  // 最近WISEが参加したチャンネルでなければスキップ
+  const lastActive = recentActiveChannels.get(channelId);
+  if (!lastActive || (now - lastActive) > ACTIVE_WINDOW) return false;
+
+  // クールダウン中はスキップ
+  const lastVol = lastVolunteerTime.get(channelId);
+  if (lastVol && (now - lastVol) < VOLUNTEER_COOLDOWN) return false;
+
+  const content = message.content;
+
+  // 質問っぽい + 技術キーワード含む
+  const isQuestion = content.includes('?') || content.includes('？') ||
+    content.match(/(?:どう|なぜ|なんで|どうやって|できる|わかる|教えて|知ってる)/);
+  const hasTechKeyword = TECH_KEYWORDS.test(content);
+
+  if (isQuestion && hasTechKeyword) {
+    // 確率ゲート: 30%で参加（ウザくならないように）
+    if (Math.random() < 0.3) {
+      lastVolunteerTime.set(channelId, now);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * チャンネルをアクティブとしてマーク（WISEが応答した時に呼ぶ）
+ */
+function markChannelActive(channelId) {
+  recentActiveChannels.set(channelId, Date.now());
+}
+
+// ============================================================
 // .env 読み込み
 // ============================================================
 const envPath = resolve(__dirname, '..', '.env');
@@ -183,19 +238,30 @@ client.on(Events.MessageCreate, async (message) => {
   }
 
   // ────────────────────────────────────────
-  // 4. メンション応答（Agent SDK）
+  // 4. メンション応答 or 自発参加
   // ────────────────────────────────────────
-  if (!message.mentions.has(client.user)) {
-    // メンションされていない場合はログのみ
-    if (process.env.DEBUG === '1') {
-      console.log(`[${message.channel.name}] ${message.author.tag}: ${message.content.slice(0, 80)}`);
+  const isMentioned = message.mentions.has(client.user);
+
+  if (!isMentioned) {
+    // 自発参加の判定（たまに会話に入る）
+    const shouldJoin = shouldVolunteerResponse(message);
+    if (!shouldJoin) {
+      if (process.env.DEBUG === '1') {
+        console.log(`[${message.channel.name}] ${message.author.tag}: ${message.content.slice(0, 80)}`);
+      }
+      return;
     }
-    return;
+    // 自発参加ログ
+    console.log(`🙋 自発参加: ${message.author.tag} in #${message.channel.name}: ${message.content.slice(0, 80)}`);
   }
 
-  // メンション部分を除去
-  const content = message.content.replace(/<@!?\d+>/g, '').trim();
-  console.log(`💬 メンション: ${message.author.tag}: ${content}`);
+  // メンション部分を除去（自発参加の場合はそのまま）
+  const content = isMentioned
+    ? message.content.replace(/<@!?\d+>/g, '').trim()
+    : message.content.trim();
+  if (isMentioned) {
+    console.log(`💬 メンション: ${message.author.tag}: ${content}`);
+  }
 
   // 空メンション
   if (!content) {
@@ -332,7 +398,12 @@ client.on(Events.MessageCreate, async (message) => {
       }
     };
 
-    const response = await generateResponse(content, {
+    // 自発参加の場合はプロンプトを補足
+    const effectiveContent = isMentioned
+      ? content
+      : `[以下はチャンネルの会話で見かけた質問です。あなたはメンションされていませんが、有用な知見があれば自然に会話に参加してください。押し付けがましくなく、短めに。]\n\n${content}`;
+
+    const response = await generateResponse(effectiveContent, {
       userId: message.author.id,
       username: message.author.displayName || message.author.username,
       channelId: message.channelId,
@@ -353,6 +424,8 @@ client.on(Events.MessageCreate, async (message) => {
       } else {
         await message.reply(sanitized);
       }
+      // チャンネルをアクティブマーク（自発参加の対象に）
+      markChannelActive(message.channelId);
     }
 
   } catch (err) {
