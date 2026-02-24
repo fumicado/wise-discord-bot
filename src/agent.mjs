@@ -8,9 +8,10 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import * as db from './db.mjs';
 import { getPersonalityContext } from './personality.mjs';
 
-const MODEL_ID = process.env.CLAUDE_MODEL || 'claude-sonnet-4-20250514';
+const MODEL_ID = process.env.CLAUDE_MODEL || 'glm-5';
 const MAX_TURNS = parseInt(process.env.MAX_TURNS || '30');
 const WORK_DIR = process.env.WORK_DIR || '/var/www/wise/workspace/wise-discord-bot';
+const AI_BACKEND = process.env.AI_BACKEND || 'glm-5';  // 'glm-5' or 'claude'
 
 // 処理中フラグ（同一ユーザーの多重リクエスト防止）
 const processingUsers = new Set();
@@ -144,6 +145,26 @@ export async function generateResponse(userMessage, context, onProgress) {
       fallbackModel: undefined,
       maxTurns: MAX_TURNS,
     };
+
+    // GLM-5バックエンドの場合、Z.AI APIに向ける
+    if (AI_BACKEND === 'glm-5') {
+      const zaiApiKey = process.env.ZAI_API_KEY;
+      if (zaiApiKey) {
+        queryOptions.model = 'glm-5';
+        queryOptions.env = {
+          ...process.env,
+          ANTHROPIC_AUTH_TOKEN: zaiApiKey,
+          ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic',
+          API_TIMEOUT_MS: '3000000',
+          ANTHROPIC_DEFAULT_OPUS_MODEL: 'glm-5',
+          ANTHROPIC_DEFAULT_SONNET_MODEL: 'glm-4.7',
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: 'glm-4.5-air',
+        };
+        console.log('[Agent] Using GLM-5 backend via Z.AI');
+      } else {
+        console.warn('[Agent] ZAI_API_KEY not set, falling back to Claude');
+      }
+    }
 
     // セッション継続
     if (session?.session_id) {
