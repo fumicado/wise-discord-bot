@@ -144,11 +144,12 @@ export async function getChannelHistory(channelId, limit = 30) {
   return rows.reverse(); // 古い順に
 }
 
-/** FULLTEXT検索 */
+/** FULLTEXT検索（メッセージリンク用にdiscord_message_id, guild_id含む） */
 export async function searchMessages(query, limit = 10) {
   const p = getPool();
   const [rows] = await p.execute(
-    `SELECT m.content, m.channel_name, m.created_at, u.display_name
+    `SELECT m.content, m.channel_name, m.channel_id, m.created_at,
+            m.discord_message_id, m.guild_id, u.display_name
      FROM messages m LEFT JOIN users u ON m.user_id = u.id
      WHERE MATCH(m.content) AGAINST(? IN NATURAL LANGUAGE MODE)
      ORDER BY m.created_at DESC LIMIT ?`,
@@ -234,15 +235,17 @@ export async function saveMessageVector(messageId, userId, channelId, summary, e
   );
 }
 
-/** ベクトル類似検索 */
+/** ベクトル類似検索（メッセージリンク用にdiscord_message_id, guild_id含む） */
 export async function searchSimilarMessages(embedding, limit = 5) {
   const p = getPool();
   const embeddingStr = '[' + embedding.join(',') + ']';
   const [rows] = await p.execute(
     `SELECT mv.content_summary, mv.channel_id, mv.created_at, u.display_name,
+            m.discord_message_id, m.guild_id, m.channel_name,
             VEC_DISTANCE_COSINE(mv.embedding, VEC_FromText(?)) AS distance
      FROM message_vectors mv
      LEFT JOIN users u ON mv.user_id = u.id
+     LEFT JOIN messages m ON mv.message_id = m.id
      ORDER BY distance ASC
      LIMIT ?`,
     [embeddingStr, limit]

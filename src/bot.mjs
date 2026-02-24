@@ -22,7 +22,7 @@ import { generateResponse, resetUserSession } from './agent.mjs';
 import { sanitizeInput, sanitizeOutput, getBlockedResponse } from './sanitizer.mjs';
 import { observeMessage, getPersonalityContext } from './personality.mjs';
 import { enqueueMessage, startFlushTimer } from './embedding.mjs';
-import { searchServerMessages, searchAllChannels, formatSearchResults } from './discord-search.mjs';
+import { searchMessages, formatSearchResults } from './discord-search.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -214,12 +214,7 @@ client.on(Events.MessageCreate, async (message) => {
     const query = searchMatch[1].trim();
     await message.channel.sendTyping();
     try {
-      // まずDB検索（蓄積データ）
-      let results = await searchServerMessages(query);
-      // DB未蓄積ならDiscord API直叩き
-      if (results.length === 0 && message.guild) {
-        results = await searchAllChannels(message.guild, query);
-      }
+      const results = await searchMessages(query);
       await message.reply(formatSearchResults(results, query));
     } catch (err) {
       console.error('[Search] Error:', err);
