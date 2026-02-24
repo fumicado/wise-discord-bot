@@ -138,35 +138,37 @@ export async function runDevPipeline(issueNumber, progressCallback) {
     await git('rebase', 'origin/main');
   });
 
-  // 3. Agent SDKで実装
+  // 3. Agent SDKで実装（Bashツールは禁止 — プロンプトインジェクション対策）
   report('🤖 Agent SDKでコードを実装中...');
 
-  // ここでAgent SDKを呼び出して実装
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
+
+  // Issue内容を安全な長さに制限（プロンプトインジェクション緩和）
+  const safeTitle = (issue.title || '').substring(0, 200);
+  const safeBody = (issue.body || '（詳細なし）').substring(0, 2000);
 
   const prompt = `GitHub Issue #${issueNumber} を実装してください。
 
 ## Issue
-**${issue.title}**
+**${safeTitle}**
 
-${issue.body || '（詳細なし）'}
+${safeBody}
 
 ## ルール
 - このリポジトリ（wise-discord-bot）のコードを修正してください
 - 既存のコードスタイルに合わせてください（ESM, .mjs）
-- テストは不要ですが、構文チェック（node --check）は必ず通してください
-- 変更したファイルをgit addしてコミットしてください
-- コミットメッセージは "Fix #${issueNumber}: <概要>" の形式で
-- 実装が完了したら結果を報告してください`;
+- ファイルの読み書きのみ行ってください
+- 実装が完了したら変更内容を報告してください`;
 
   let result = '';
   for await (const event of query({
     prompt,
     options: {
       cwd: REPO_DIR,
-      allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'],
+      // Bashは禁止: Issueの内容経由でのコマンドインジェクションを防止
+      allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
       permissionMode: 'acceptEdits',
-      systemPrompt: 'あなたはwise-discord-botの開発者です。GitHub Issueの内容を実装してください。コードの品質を保ち、既存のパターンに合わせてください。',
+      systemPrompt: 'あなたはwise-discord-botの開発者です。GitHub Issueの内容を実装してください。コードの品質を保ち、既存のパターンに合わせてください。シェルコマンドの実行は禁止です。ファイル操作のみ行ってください。',
       settingSources: [],
       model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-20250514',
       maxTurns: 50,
@@ -177,8 +179,10 @@ ${issue.body || '（詳細なし）'}
     }
   }
 
-  // 4. Push
-  report('📤 プッシュ中...');
+  // 4. Git add + commit + push（パイプライン側で実行、Agent側ではやらせない）
+  report('📤 コミット＆プッシュ中...');
+  await git('add', '-A');
+  await git('commit', '-m', `Fix #${issueNumber}: ${safeTitle}`);
   await git('push', '-u', 'origin', branchName).catch(async () => {
     await git('push', '--force-with-lease', 'origin', branchName);
   });

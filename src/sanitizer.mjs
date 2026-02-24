@@ -10,13 +10,53 @@ const ZAI_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
 const ZAI_API_KEY = process.env.ZAI_API_KEY;
 const SANITIZE_MODEL = 'glm-4-flash'; // 最安モデル
 
+// ルールベースのインジェクション検出パターン（LLM判定の前段に配置）
+const INJECTION_PATTERNS = [
+  /ignore\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|context)/i,
+  /disregard\s+(all\s+)?(previous|prior|above)/i,
+  /system\s*prompt/i,
+  /repeat\s+(the\s+)?(above|your\s+instructions?|system)/i,
+  /reveal\s+(your|the)\s+(instructions?|system|prompt|rules?)/i,
+  /what\s+(are|is)\s+your\s+(system|instructions?|rules?|prompt)/i,
+  /you\s+are\s+now\s+/i,
+  /from\s+now\s+on[\s,]+you\s+(are|will|must|should)/i,
+  /act\s+as\s+(if|though)?\s*(you\s+are|a|an)/i,
+  /forget\s+(everything|all|your)\s+(you|instructions?|rules?)/i,
+  /override\s+(your|all|the)\s+(instructions?|rules?|system)/i,
+  /jailbreak/i,
+  /DAN\s*mode/i,
+  /developer\s*mode/i,
+];
+
+/**
+ * ルールベースのインジェクション検出（決定論的・バイパス困難）
+ */
+function checkRuleBasedInjection(text) {
+  for (const pattern of INJECTION_PATTERNS) {
+    if (pattern.test(text)) {
+      return { safe: false, reason: 'Prompt injection pattern detected' };
+    }
+  }
+  return { safe: true };
+}
+
 /**
  * 入力サニタイズ: プロンプトインジェクション等を検出
+ * 2層防御: (1)ルールベース正規表現 → (2)LLM判定
  * @returns {{ safe: boolean, reason?: string, cleaned?: string }}
  */
 export async function sanitizeInput(userMessage, username) {
-  if (!ZAI_API_KEY) return { safe: true, cleaned: userMessage };
   if (!userMessage || userMessage.length < 3) return { safe: true, cleaned: userMessage };
+
+  // 第1層: ルールベース検出（確実に弾く）
+  const ruleCheck = checkRuleBasedInjection(userMessage);
+  if (!ruleCheck.safe) {
+    console.warn(`[Sanitizer] Rule-based block: ${username} — ${ruleCheck.reason}`);
+    return ruleCheck;
+  }
+
+  // 第2層: LLM判定（補助的）
+  if (!ZAI_API_KEY) return { safe: true, cleaned: userMessage };
 
   try {
     const res = await fetch(ZAI_API_URL, {

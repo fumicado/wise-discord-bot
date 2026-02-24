@@ -29,10 +29,14 @@ export function enqueueMessage(messageDbId, userId, channelId, content) {
   }
 }
 
+const MAX_RETRIES = 2;
+const RETRY_DELAY_MS = 5000;
+
 /**
  * キューをフラッシュ（ベクトル化して保存）
+ * 失敗時はリトライ（最大2回）、それでも駄目なら破棄してログ
  */
-async function flushQueue() {
+async function flushQueue(retryCount = 0) {
   if (queue.length === 0) return;
 
   const batch = queue.splice(0, BATCH_SIZE);
@@ -57,8 +61,15 @@ async function flushQueue() {
 
     console.log(`[Embedding] Vectorized ${batch.length} messages`);
   } catch (err) {
-    console.warn('[Embedding] Batch failed:', err.message);
-    // 失敗したバッチはキューに戻さない（ログで十分）
+    if (retryCount < MAX_RETRIES) {
+      console.warn(`[Embedding] Batch failed (attempt ${retryCount + 1}/${MAX_RETRIES + 1}), retrying:`, err.message);
+      // 失敗バッチをキュー先頭に戻してリトライ
+      queue.unshift(...batch);
+      setTimeout(() => flushQueue(retryCount + 1), RETRY_DELAY_MS * (retryCount + 1));
+    } else {
+      console.error(`[Embedding] Batch discarded after ${MAX_RETRIES + 1} attempts:`, err.message,
+        'messageIds:', batch.map(m => m.messageDbId));
+    }
   }
 }
 

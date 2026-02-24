@@ -93,8 +93,15 @@ for (const line of envContent.split('\n')) {
   if (!trimmed || trimmed.startsWith('#')) continue;
   const idx = trimmed.indexOf('=');
   if (idx === -1) continue;
-  const key = trimmed.slice(0, idx);
-  const val = trimmed.slice(idx + 1);
+  const key = trimmed.slice(0, idx).trim();
+  let val = trimmed.slice(idx + 1).trim();
+  // クォート除去（'value' or "value"）
+  if ((val.startsWith("'") && val.endsWith("'")) || (val.startsWith('"') && val.endsWith('"'))) {
+    val = val.slice(1, -1);
+  }
+  // インラインコメント除去（クォート外のみ）
+  const commentIdx = val.indexOf(' #');
+  if (commentIdx > 0) val = val.slice(0, commentIdx).trim();
   if (!process.env[key]) process.env[key] = val;
 }
 
@@ -223,7 +230,8 @@ client.on(Events.MessageCreate, async (message) => {
   // ────────────────────────────────────────
   // 2. 性格分析パイプライン（非同期・ノンブロッキング）
   // ────────────────────────────────────────
-  observeMessage(message.author.id, message.content, message.id).catch(() => {});
+  observeMessage(message.author.id, message.content, message.id)
+    .catch(err => console.warn('[Personality] Observe error:', err.message));
 
   // ────────────────────────────────────────
   // 3. 自己紹介チャンネル検出 → 保存
@@ -334,9 +342,9 @@ client.on(Events.MessageCreate, async (message) => {
     try {
       const progressMsg = await message.channel.send('⏳ 準備中...');
       const result = await runDevPipeline(issueNumber, async (status) => {
-        await progressMsg.edit(status).catch(() => {});
+        await progressMsg.edit(status).catch(err => console.warn('[Bot] Action failed:', err.message));
       });
-      await progressMsg.delete().catch(() => {});
+      await progressMsg.delete().catch(err => console.warn('[Bot] Action failed:', err.message));
       await message.reply(formatPRCreated(result));
     } catch (err) {
       console.error('[Dev] Pipeline error:', err);
@@ -361,7 +369,7 @@ client.on(Events.MessageCreate, async (message) => {
   // typing表示
   await message.channel.sendTyping();
   const typingInterval = setInterval(() => {
-    message.channel.sendTyping().catch(() => {});
+    message.channel.sendTyping().catch(err => console.warn('[Bot] Action failed:', err.message));
   }, 8000);
 
   try {
@@ -394,7 +402,7 @@ client.on(Events.MessageCreate, async (message) => {
       if (progressMsg && progressMsg !== 'sending' && (now - lastEditTime) >= EDIT_INTERVAL) {
         const truncated = text.substring(0, 1900) + '\n\n_⏳ 回答生成中..._';
         lastEditTime = now;
-        progressMsg.edit(truncated).catch(() => {});
+        progressMsg.edit(truncated).catch(err => console.warn('[Bot] Action failed:', err.message));
       }
     };
 
@@ -419,7 +427,7 @@ client.on(Events.MessageCreate, async (message) => {
     if (sanitized) {
       if (progressMsg && progressMsg !== 'sending') {
         await progressMsg.edit(sanitized).catch(async () => {
-          await message.reply(sanitized).catch(() => {});
+          await message.reply(sanitized).catch(err => console.warn('[Bot] Action failed:', err.message));
         });
       } else {
         await message.reply(sanitized);
@@ -430,7 +438,7 @@ client.on(Events.MessageCreate, async (message) => {
 
   } catch (err) {
     console.error('[Bot] Response error:', err);
-    await message.reply('お応えに手間取っております。もう一度お声がけくださいませ 🎩').catch(() => {});
+    await message.reply('お応えに手間取っております。もう一度お声がけくださいませ 🎩').catch(err => console.warn('[Bot] Action failed:', err.message));
   } finally {
     clearInterval(typingInterval);
   }

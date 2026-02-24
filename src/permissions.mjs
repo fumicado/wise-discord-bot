@@ -68,7 +68,8 @@ export function getUserLevel(member) {
   for (const role of member.roles.cache.values()) {
     const roleName = role.name.toLowerCase();
     for (const [pattern, level] of Object.entries(ROLE_LEVELS)) {
-      if (roleName === pattern.toLowerCase() || roleName.includes(pattern.toLowerCase())) {
+      // 完全一致のみ（部分一致は意図しない権限昇格の原因になる）
+      if (roleName === pattern.toLowerCase()) {
         if (LEVEL_ORDER.indexOf(level) > LEVEL_ORDER.indexOf(highestLevel)) {
           highestLevel = level;
         }
