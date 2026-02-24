@@ -290,7 +290,7 @@ client.on(Events.MessageCreate, async (message) => {
   }
 
   // ────────────────────────────────────────
-  // 6. Agent SDK でAI応答生成
+  // 6. Agent SDK でAI応答生成（ストリーミング）
   // ────────────────────────────────────────
   // typing表示
   await message.channel.sendTyping();
@@ -302,21 +302,57 @@ client.on(Events.MessageCreate, async (message) => {
     // チャンネル直近の会話を取得（コンテキスト）
     const channelHistory = await db.getChannelHistory(message.channelId, 15);
 
+    // ストリーミング用の状態管理
+    let progressMsg = null;       // 途中経過メッセージ
+    let lastEditTime = 0;         // 最後に編集した時刻
+    let pendingText = '';         // 未送信テキスト
+    const EDIT_INTERVAL = 3000;   // 編集間隔（ms）Discord rate limit対策
+    const MIN_TEXT_LENGTH = 20;   // 最低表示文字数
+
+    const onProgress = (text) => {
+      pendingText = text;
+      const now = Date.now();
+
+      // 初回送信: ある程度テキストが溜まったら
+      if (!progressMsg && text.length >= MIN_TEXT_LENGTH) {
+        const truncated = text.substring(0, 1900) + '\n\n_⏳ 回答生成中..._';
+        progressMsg = 'sending';  // ロック
+        message.reply(truncated).then(msg => {
+          progressMsg = msg;
+          lastEditTime = Date.now();
+        }).catch(() => { progressMsg = null; });
+        return;
+      }
+
+      // 定期更新: rate limit対策で間隔を空ける
+      if (progressMsg && progressMsg !== 'sending' && (now - lastEditTime) >= EDIT_INTERVAL) {
+        const truncated = text.substring(0, 1900) + '\n\n_⏳ 回答生成中..._';
+        lastEditTime = now;
+        progressMsg.edit(truncated).catch(() => {});
+      }
+    };
+
     const response = await generateResponse(content, {
       userId: message.author.id,
       username: message.author.displayName || message.author.username,
       channelId: message.channelId,
       channelName: message.channel.name,
       channelHistory,
-      userLevel,  // ロール情報をAgent SDKに渡す
-    });
+      userLevel,
+    }, onProgress);
 
     // 出力サニタイズ
     const sanitized = await sanitizeOutput(response);
 
-    // 応答送信
+    // 最終応答: 途中メッセージがあれば編集、なければ新規送信
     if (sanitized) {
-      await message.reply(sanitized);
+      if (progressMsg && progressMsg !== 'sending') {
+        await progressMsg.edit(sanitized).catch(async () => {
+          await message.reply(sanitized).catch(() => {});
+        });
+      } else {
+        await message.reply(sanitized);
+      }
     }
 
   } catch (err) {

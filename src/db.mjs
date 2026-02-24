@@ -3,22 +3,20 @@
  */
 import mysql from 'mysql2/promise';
 
-const DB_CONFIG = {
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '3306'),
-  database: process.env.DB_NAME || 'discord',
-  user: process.env.DB_USER || 'ccagent',
-  password: process.env.DB_PASS || '',
-  waitForConnections: true,
-  connectionLimit: 10,
-  charset: 'utf8mb4',
-};
-
 let pool = null;
 
 export function getPool() {
   if (!pool) {
-    pool = mysql.createPool(DB_CONFIG);
+    pool = mysql.createPool({
+      host: process.env.DB_HOST || 'localhost',
+      port: parseInt(process.env.DB_PORT || '3306'),
+      database: process.env.DB_NAME || 'discord',
+      user: process.env.DB_USER || 'ccagent',
+      password: process.env.DB_PASS || '',
+      waitForConnections: true,
+      connectionLimit: 10,
+      charset: 'utf8mb4',
+    });
     console.log('[DB] MariaDB pool created (discord)');
   }
   return pool;
