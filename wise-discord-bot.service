@@ -1,0 +1,15 @@
+[Unit]
+Description=WISE Discord Bot
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/var/www/wise/workspace/wise-discord-bot
+ExecStart=/usr/bin/node /var/www/wise/workspace/wise-discord-bot/src/bot.mjs
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

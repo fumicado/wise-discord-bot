@@ -1,0 +1,312 @@
+/**
+ * WISE Discord Bot — メインエントリーポイント
+ *
+ * 機能:
+ * - 全メッセージをMariaDB(discord)に記録
+ * - ユーザー自動追跡（upsert）
+ * - メンション時にAgent SDK経由でAI応答
+ * - 入力サニタイズ（GLM-4-flash）
+ * - 出力サニタイズ（内部情報マスク、Discord文字数制限）
+ * - 性格分析パイプライン（20メッセージごと）
+ * - メッセージベクトル化（OpenAI embedding → MariaDB VECTOR）
+ * - ウェルカムメッセージ（執事スタイル）
+ * - 自己紹介チャンネル検出・保存
+ */
+import { Client, GatewayIntentBits, Events, ActivityType } from 'discord.js';
+import { readFileSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+import * as db from './db.mjs';
+import { generateResponse, resetUserSession } from './agent.mjs';
+import { sanitizeInput, sanitizeOutput, getBlockedResponse } from './sanitizer.mjs';
+import { observeMessage, getPersonalityContext } from './personality.mjs';
+import { enqueueMessage, startFlushTimer } from './embedding.mjs';
+import { searchServerMessages, searchAllChannels, formatSearchResults } from './discord-search.mjs';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// ============================================================
+// .env 読み込み
+// ============================================================
+const envPath = resolve(__dirname, '..', '.env');
+const envContent = readFileSync(envPath, 'utf-8');
+for (const line of envContent.split('\n')) {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('#')) continue;
+  const idx = trimmed.indexOf('=');
+  if (idx === -1) continue;
+  const key = trimmed.slice(0, idx);
+  const val = trimmed.slice(idx + 1);
+  if (!process.env[key]) process.env[key] = val;
+}
+
+const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
+const GUILD_ID  = process.env.DISCORD_GUILD_ID;
+
+if (!BOT_TOKEN) {
+  console.error('DISCORD_BOT_TOKEN が設定されていません');
+  process.exit(1);
+}
+
+// ============================================================
+// Bot 初期化
+// ============================================================
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.MessageContent,
+  ],
+});
+
+// ============================================================
+// 起動
+// ============================================================
+client.once(Events.ClientReady, async (c) => {
+  console.log(`✅ WISE Discord Bot v2 起動: ${c.user.tag}`);
+  console.log(`🏠 Guild: ${GUILD_ID}`);
+  console.log(`🤖 Model: ${process.env.CLAUDE_MODEL || 'claude-sonnet-4-20250514'}`);
+  console.log(`📅 ${new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}`);
+
+  // ステータス設定
+  c.user.setPresence({
+    activities: [{ name: '日本AI開発者互助会', type: ActivityType.Watching }],
+    status: 'online',
+  });
+
+  // DB接続確認
+  try {
+    const pool = db.getPool();
+    await pool.execute('SELECT 1');
+    console.log('✅ MariaDB (discord) 接続OK');
+  } catch (err) {
+    console.error('MariaDB接続失敗:', err.message);
+  }
+
+  // ベクトル化タイマー開始
+  startFlushTimer();
+});
+
+// ============================================================
+// 新メンバー参加 → ウェルカムメッセージ + DB登録
+// ============================================================
+client.on(Events.GuildMemberAdd, async (member) => {
+  console.log(`👋 新メンバー参加: ${member.user.tag}`);
+
+  // DB登録
+  try {
+    await db.upsertUser(member.user);
+  } catch (err) {
+    console.warn('[DB] User upsert failed:', err.message);
+  }
+
+  // 自己紹介チャンネルを探す
+  const introChannel = member.guild.channels.cache.find(
+    c => c.name === '自己紹介'
+  );
+
+  if (introChannel) {
+    const rulesChannel = member.guild.channels.cache.find(c => c.name === 'ルール-ガイドライン');
+    await introChannel.send(
+      `${member} 様、ようこそお越しくださいました 🎩\n\n` +
+      `私、当会の執事を務めております **WISE** と申します。\n` +
+      `皆様との交流の第一歩として、簡単な自己紹介をお願いできますでしょうか。\n\n` +
+      `・お名前（ニックネームで結構でございます）\n` +
+      `・普段のお仕事や活動\n` +
+      `・AIで関心のある分野\n\n` +
+      (rulesChannel ? `📋 お館のルールは <#${rulesChannel.id}> にございます。\n` : '') +
+      `何かございましたら、いつでもお声がけくださいませ。`
+    );
+  }
+});
+
+// ============================================================
+// メッセージ受信 → 記録 + AI応答
+// ============================================================
+client.on(Events.MessageCreate, async (message) => {
+  // Bot自身のメッセージは無視（ただし記録はする）
+  if (message.author.id === client.user.id) return;
+
+  // ────────────────────────────────────────
+  // 1. 全メッセージをDBに記録
+  // ────────────────────────────────────────
+  try {
+    // ユーザーupsert
+    await db.upsertUser(message.author);
+
+    // メッセージ保存
+    await db.saveMessage(message);
+
+    // メッセージカウント更新
+    if (!message.author.bot) {
+      await db.incrementMessageCount(message.author.id);
+    }
+
+    // ベクトル化キューに追加（Bot以外）
+    if (!message.author.bot && message.content) {
+      // messagesテーブルのIDを取得
+      const pool = db.getPool();
+      const [rows] = await pool.execute(
+        'SELECT id FROM messages WHERE discord_message_id = ?',
+        [message.id]
+      );
+      if (rows[0]) {
+        enqueueMessage(rows[0].id, message.author.id, message.channelId, message.content);
+      }
+    }
+  } catch (err) {
+    console.warn('[DB] Message save failed:', err.message);
+  }
+
+  // Bot自体のメッセージは応答しない
+  if (message.author.bot) return;
+
+  // ────────────────────────────────────────
+  // 2. 性格分析パイプライン（非同期・ノンブロッキング）
+  // ────────────────────────────────────────
+  observeMessage(message.author.id, message.content, message.id).catch(() => {});
+
+  // ────────────────────────────────────────
+  // 3. 自己紹介チャンネル検出 → 保存
+  // ────────────────────────────────────────
+  if (message.channel.name === '自己紹介' && message.content.length > 20) {
+    try {
+      await db.saveUserIntro(message.author.id, message.content.substring(0, 2000));
+      console.log(`[Intro] Saved intro for ${message.author.tag}`);
+    } catch (err) {
+      console.warn('[Intro] Save failed:', err.message);
+    }
+  }
+
+  // ────────────────────────────────────────
+  // 4. メンション応答（Agent SDK）
+  // ────────────────────────────────────────
+  if (!message.mentions.has(client.user)) {
+    // メンションされていない場合はログのみ
+    if (process.env.DEBUG === '1') {
+      console.log(`[${message.channel.name}] ${message.author.tag}: ${message.content.slice(0, 80)}`);
+    }
+    return;
+  }
+
+  // メンション部分を除去
+  const content = message.content.replace(/<@!?\d+>/g, '').trim();
+  console.log(`💬 メンション: ${message.author.tag}: ${content}`);
+
+  // 空メンション
+  if (!content) {
+    await message.reply('お呼びでございますか？ 🎩 何なりとお申し付けくださいませ。');
+    return;
+  }
+
+  // リセットコマンド
+  if (content.match(/^(リセット|reset|クリア|clear)$/i)) {
+    const resetMsg = await resetUserSession(message.author.id, message.channelId);
+    await message.reply(resetMsg);
+    return;
+  }
+
+  // 検索コマンド: @WISE 検索 <キーワード> or @WISE search <keyword>
+  const searchMatch = content.match(/^(?:検索|search)\s+(.+)$/i);
+  if (searchMatch) {
+    const query = searchMatch[1].trim();
+    await message.channel.sendTyping();
+    try {
+      // まずDB検索（蓄積データ）
+      let results = await searchServerMessages(query);
+      // DB未蓄積ならDiscord API直叩き
+      if (results.length === 0 && message.guild) {
+        results = await searchAllChannels(message.guild, query);
+      }
+      await message.reply(formatSearchResults(results, query));
+    } catch (err) {
+      console.error('[Search] Error:', err);
+      await message.reply('検索中にエラーが発生いたしました 🎩');
+    }
+    return;
+  }
+
+  // ────────────────────────────────────────
+  // 5. 入力サニタイズ
+  // ────────────────────────────────────────
+  const inputCheck = await sanitizeInput(content, message.author.username);
+  if (!inputCheck.safe) {
+    console.warn(`[Sanitizer] Blocked: ${message.author.tag} — ${inputCheck.reason}`);
+    await message.reply(getBlockedResponse(inputCheck.reason));
+    return;
+  }
+
+  // ────────────────────────────────────────
+  // 6. Agent SDK でAI応答生成
+  // ────────────────────────────────────────
+  // typing表示
+  await message.channel.sendTyping();
+  const typingInterval = setInterval(() => {
+    message.channel.sendTyping().catch(() => {});
+  }, 8000);
+
+  try {
+    // チャンネル直近の会話を取得（コンテキスト）
+    const channelHistory = await db.getChannelHistory(message.channelId, 15);
+
+    const response = await generateResponse(content, {
+      userId: message.author.id,
+      username: message.author.displayName || message.author.username,
+      channelId: message.channelId,
+      channelName: message.channel.name,
+      channelHistory,
+    });
+
+    // 出力サニタイズ
+    const sanitized = await sanitizeOutput(response);
+
+    // 応答送信
+    if (sanitized) {
+      await message.reply(sanitized);
+    }
+
+    // Bot応答もDBに記録（saveMessageはdiscord.jsのMessage型を期待）
+    // → 応答はreplyで送信済みなのでDiscord側でMessageCreateイベントが発火し自動記録される
+
+  } catch (err) {
+    console.error('[Bot] Response error:', err);
+    await message.reply('お応えに手間取っております。もう一度お声がけくださいませ 🎩').catch(() => {});
+  } finally {
+    clearInterval(typingInterval);
+  }
+});
+
+// ============================================================
+// エラーハンドリング
+// ============================================================
+client.on(Events.Error, (error) => {
+  console.error('Discord Client Error:', error.message);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+});
+
+process.on('unhandledRejection', (error) => {
+  console.error('Unhandled Rejection:', error);
+});
+
+// ============================================================
+// Graceful shutdown
+// ============================================================
+async function shutdown(signal) {
+  console.log(`🛑 ${signal} received, shutting down...`);
+  client.destroy();
+  await db.closePool();
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+// ============================================================
+// 接続
+// ============================================================
+client.login(BOT_TOKEN);
