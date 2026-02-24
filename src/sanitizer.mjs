@@ -98,8 +98,8 @@ JSON形式で回答: {"safe": true/false, "reason": "理由（不安全な場合
     });
 
     if (!res.ok) {
-      console.warn('[Sanitizer] API error, allowing through:', res.status);
-      return { safe: true, cleaned: userMessage };
+      console.warn('[Sanitizer] API error, blocking as precaution:', res.status);
+      return { safe: false, reason: 'Sanitizer service unavailable' };
     }
 
     const data = await res.json();
@@ -113,12 +113,13 @@ JSON形式で回答: {"safe": true/false, "reason": "理由（不安全な場合
         cleaned: userMessage,
       };
     } catch {
-      // JSONパース失敗 = 安全とみなす
-      return { safe: true, cleaned: userMessage };
+      // JSONパース失敗 = LLMが不正なレスポンスを返した → 安全側に倒す
+      console.warn('[Sanitizer] LLM response parse failed, blocking as precaution');
+      return { safe: false, reason: 'Sanitizer response unparseable' };
     }
   } catch (err) {
-    console.warn('[Sanitizer] Input check failed, allowing through:', err.message);
-    return { safe: true, cleaned: userMessage };
+    console.warn('[Sanitizer] Input check failed, blocking as precaution:', err.message);
+    return { safe: false, reason: 'Sanitizer service unavailable' };
   }
 }
 

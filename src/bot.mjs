@@ -13,9 +13,9 @@
  * - 自己紹介チャンネル検出・保存
  */
 import { Client, GatewayIntentBits, Events, ActivityType } from 'discord.js';
-import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
 
 import * as db from './db.mjs';
 import { generateResponse, resetUserSession } from './agent.mjs';
@@ -84,26 +84,9 @@ function markChannelActive(channelId) {
 }
 
 // ============================================================
-// .env 読み込み
+// .env 読み込み（dotenvで安全にパース）
 // ============================================================
-const envPath = resolve(__dirname, '..', '.env');
-const envContent = readFileSync(envPath, 'utf-8');
-for (const line of envContent.split('\n')) {
-  const trimmed = line.trim();
-  if (!trimmed || trimmed.startsWith('#')) continue;
-  const idx = trimmed.indexOf('=');
-  if (idx === -1) continue;
-  const key = trimmed.slice(0, idx).trim();
-  let val = trimmed.slice(idx + 1).trim();
-  // クォート除去（'value' or "value"）
-  if ((val.startsWith("'") && val.endsWith("'")) || (val.startsWith('"') && val.endsWith('"'))) {
-    val = val.slice(1, -1);
-  }
-  // インラインコメント除去（クォート外のみ）
-  const commentIdx = val.indexOf(' #');
-  if (commentIdx > 0) val = val.slice(0, commentIdx).trim();
-  if (!process.env[key]) process.env[key] = val;
-}
+dotenv.config({ path: resolve(__dirname, '..', '.env') });
 
 const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const GUILD_ID  = process.env.DISCORD_GUILD_ID;
