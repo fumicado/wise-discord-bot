@@ -243,6 +243,43 @@ client.on(Events.MessageCreate, async (message) => {
     } catch (err) {
       console.warn('[Intro] Save failed:', err.message);
     }
+
+    // 自己紹介への自動返信（メンション有無に関わらず必ず）
+    try {
+      await message.channel.sendTyping();
+      const introPrompt = `以下はDiscordサーバー「日本AI開発者互助会」の#自己紹介チャンネルに投稿された自己紹介です。執事として温かく歓迎してください。
+
+相手の自己紹介の内容（名前、仕事、興味分野など）に触れて、パーソナライズされた歓迎メッセージを送ってください。
+- 3〜5行程度の短めで温かい返信
+- 相手の興味分野に関連するチャンネルやフォーラムがあれば案内
+- 執事口調（〜でございます、〜ですぞ）
+
+自己紹介内容:
+${message.content.substring(0, 500)}`;
+
+      const response = await generateResponse(introPrompt, {
+        userId: message.author.id,
+        username: message.author.displayName || message.author.username,
+        channelId: message.channelId,
+        channelName: message.channel.name,
+        channelHistory: [],
+        userLevel: getUserLevel(message.member),
+      });
+
+      const sanitized = await sanitizeOutput(response);
+      if (sanitized) {
+        await message.reply(sanitized);
+        markChannelActive(message.channelId);
+      }
+    } catch (err) {
+      console.warn('[Intro] Auto-reply failed:', err.message);
+      // フォールバック: LLM失敗時は定型文
+      await message.reply(
+        `${message.author} 様、素敵な自己紹介をありがとうございます 🎩\n` +
+        `ようこそ日本AI開発者互助会へ！皆様との交流を楽しみにしておりますぞ。`
+      ).catch(() => {});
+    }
+    return; // 自己紹介への返信後は通常のメンション処理をスキップ
   }
 
   // ────────────────────────────────────────
