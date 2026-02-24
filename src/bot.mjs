@@ -23,6 +23,8 @@ import { sanitizeInput, sanitizeOutput, getBlockedResponse } from './sanitizer.m
 import { observeMessage, getPersonalityContext } from './personality.mjs';
 import { enqueueMessage, startFlushTimer } from './embedding.mjs';
 import { searchMessages, formatSearchResults } from './discord-search.mjs';
+import { getUserLevel, hasPermission, getPermissionDeniedMessage, getPermissionContext } from './permissions.mjs';
+import { parseIssueCommand, createIssue, runDevPipeline, formatIssueCreated, formatPRCreated } from './github-dev.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -201,6 +203,25 @@ client.on(Events.MessageCreate, async (message) => {
     return;
   }
 
+  // ────────────────────────────────────────
+  // 4a. ロールベース権限判定
+  // ────────────────────────────────────────
+  const userLevel = getUserLevel(message.member);
+
+  // コマンド判定用の先頭ワード
+  const firstWord = content.split(/\s+/)[0].toLowerCase();
+
+  // 権限チェック（コマンドがある場合のみ）
+  const knownCommands = ['issue', 'dev', '検索', 'search', 'リセット', 'reset', 'クリア', 'clear', 'status', 'stats', 'personality'];
+  if (knownCommands.includes(firstWord) && !hasPermission(firstWord, userLevel)) {
+    await message.reply(getPermissionDeniedMessage(firstWord, firstWord));
+    return;
+  }
+
+  // ────────────────────────────────────────
+  // 4b. コマンドルーティング
+  // ────────────────────────────────────────
+
   // リセットコマンド
   if (content.match(/^(リセット|reset|クリア|clear)$/i)) {
     const resetMsg = await resetUserSession(message.author.id, message.channelId);
@@ -208,7 +229,7 @@ client.on(Events.MessageCreate, async (message) => {
     return;
   }
 
-  // 検索コマンド: @WISE 検索 <キーワード> or @WISE search <keyword>
+  // 検索コマンド: @WISE 検索 <キーワード>
   const searchMatch = content.match(/^(?:検索|search)\s+(.+)$/i);
   if (searchMatch) {
     const query = searchMatch[1].trim();
@@ -219,6 +240,41 @@ client.on(Events.MessageCreate, async (message) => {
     } catch (err) {
       console.error('[Search] Error:', err);
       await message.reply('検索中にエラーが発生いたしました 🎩');
+    }
+    return;
+  }
+
+  // Issue作成: @WISE issue <タイトル>: <説明>
+  const issueMatch = content.match(/^issue\s+(.+)$/i);
+  if (issueMatch) {
+    await message.channel.sendTyping();
+    try {
+      const { title, body } = parseIssueCommand(issueMatch[1]);
+      const fullBody = `${body}\n\n---\nRequested by: ${message.author.username} via Discord\nChannel: #${message.channel.name}`;
+      const issue = await createIssue(title, fullBody);
+      await message.reply(formatIssueCreated(issue, message.author.toString()));
+    } catch (err) {
+      console.error('[Issue] Error:', err);
+      await message.reply(`Issue作成に失敗いたしました: ${err.message} 🎩`);
+    }
+    return;
+  }
+
+  // 自動開発: @WISE dev #<issue番号>
+  const devMatch = content.match(/^dev\s+#?(\d+)$/i);
+  if (devMatch) {
+    const issueNumber = parseInt(devMatch[1]);
+    await message.reply(`📋 Issue #${issueNumber} の自動実装を開始いたします 🎩\nしばらくお待ちくださいませ...`);
+    try {
+      const progressMsg = await message.channel.send('⏳ 準備中...');
+      const result = await runDevPipeline(issueNumber, async (status) => {
+        await progressMsg.edit(status).catch(() => {});
+      });
+      await progressMsg.delete().catch(() => {});
+      await message.reply(formatPRCreated(result));
+    } catch (err) {
+      console.error('[Dev] Pipeline error:', err);
+      await message.reply(`自動実装中にエラーが発生いたしました: ${err.message} 🎩`);
     }
     return;
   }
@@ -252,6 +308,7 @@ client.on(Events.MessageCreate, async (message) => {
       channelId: message.channelId,
       channelName: message.channel.name,
       channelHistory,
+      userLevel,  // ロール情報をAgent SDKに渡す
     });
 
     // 出力サニタイズ
@@ -261,9 +318,6 @@ client.on(Events.MessageCreate, async (message) => {
     if (sanitized) {
       await message.reply(sanitized);
     }
-
-    // Bot応答もDBに記録（saveMessageはdiscord.jsのMessage型を期待）
-    // → 応答はreplyで送信済みなのでDiscord側でMessageCreateイベントが発火し自動記録される
 
   } catch (err) {
     console.error('[Bot] Response error:', err);
