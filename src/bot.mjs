@@ -26,6 +26,7 @@ import { searchMessages, formatSearchResults } from './discord-search.mjs';
 import { getUserLevel, hasPermission, getPermissionDeniedMessage, getPermissionContext } from './permissions.mjs';
 import { parseIssueCommand, createIssue, runDevPipeline, formatIssueCreated, formatPRCreated } from './github-dev.mjs';
 import { extractActions, executeActions } from './discord-admin.mjs';
+import { classifyMessage } from './classifier.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -220,16 +221,54 @@ client.on(Events.MessageCreate, async (message) => {
   // ────────────────────────────────────────
   // 3. 自己紹介チャンネル検出 → 保存
   // ────────────────────────────────────────
-  if (message.channel.name === '自己紹介' && message.content.length > 20) {
-    try {
-      await db.saveUserIntro(message.author.id, message.content.substring(0, 2000));
-      console.log(`[Intro] Saved intro for ${message.author.tag}`);
-    } catch (err) {
-      console.warn('[Intro] Save failed:', err.message);
-    }
+  if (message.channel.name === '自己紹介' && message.content.length > 20 && !message.reference) {
+    // 汎用分類器で意図を判定（返信メッセージは除外済み）
+    const { intent, confidence } = await classifyMessage(message.content, { channelName: message.channel.name });
+    if (intent === 'self_introduction' && confidence >= 0.7) {
+      try {
+        await db.saveUserIntro(message.author.id, message.content.substring(0, 2000));
+        console.log(`[Intro] Saved intro for ${message.author.tag}`);
+      } catch (err) {
+        console.warn('[Intro] Save failed:', err.message);
+      }
 
-    // 自己紹介への自動返信は無効化（メンションされた場合のみ通常フローで応答）
-    // TODO: 新規メンバーの初回自己紹介のみに限定する等、条件を検討
+      // 自己紹介への自動返信（LLMでパーソナライズ）
+      try {
+        await message.channel.sendTyping();
+        const introPrompt = `以下はDiscordサーバー「日本AI開発者互助会」の#自己紹介チャンネルに投稿された自己紹介です。執事として温かく歓迎してください。
+
+相手の自己紹介の内容（名前、仕事、興味分野など）に触れて、パーソナライズされた歓迎メッセージを送ってください。
+- 3〜5行程度の短めで温かい返信
+- 相手の興味分野に関連するチャンネルやフォーラムがあれば案内
+- 執事口調（〜でございます、〜ですぞ）
+
+自己紹介内容:
+${message.content.substring(0, 500)}`;
+
+        const response = await generateResponse(introPrompt, {
+          userId: message.author.id,
+          username: message.author.displayName || message.author.username,
+          channelId: message.channelId,
+          channelName: message.channel.name,
+          channelHistory: [],
+          userLevel: getUserLevel(message.member),
+        });
+
+        const sanitized = await sanitizeOutput(response);
+        if (sanitized) {
+          await message.reply(sanitized);
+          markChannelActive(message.channelId);
+        }
+      } catch (err) {
+        console.warn('[Intro] Auto-reply failed:', err.message);
+        await message.reply(
+          `${message.author} 様、素敵な自己紹介をありがとうございます 🎩\n` +
+          `ようこそ日本AI開発者互助会へ！皆様との交流を楽しみにしておりますぞ。`
+        ).catch(() => {});
+      }
+      return;
+    }
+    // 自己紹介でなければ通常フローへ
   }
 
   // ────────────────────────────────────────
