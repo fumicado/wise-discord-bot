@@ -76,6 +76,16 @@ export async function saveUserIntro(userId, intro) {
   await p.execute('UPDATE users SET intro = ? WHERE id = ?', [intro, userId]);
 }
 
+/** ユーザーが自己紹介済みか判定 */
+export async function hasUserIntro(userId) {
+  const p = getPool();
+  const [rows] = await p.execute(
+    'SELECT intro FROM users WHERE id = ? AND intro IS NOT NULL AND intro != ""',
+    [userId]
+  );
+  return rows.length > 0;
+}
+
 /** 性格スコアを更新 */
 export async function updatePersonalityScores(userId, scores, summary) {
   const p = getPool();
@@ -129,13 +139,13 @@ export async function getRecentMessages(userId, limit = 20) {
   return rows;
 }
 
-/** チャンネルの最近のメッセージを取得 */
+/** チャンネルの最近のメッセージを取得（Bot含む — 会話の流れを保持） */
 export async function getChannelHistory(channelId, limit = 30) {
   const p = getPool();
   const [rows] = await p.execute(
-    `SELECT m.content, m.user_id, u.display_name, m.created_at
+    `SELECT m.content, m.user_id, u.display_name, m.is_bot, m.created_at
      FROM messages m LEFT JOIN users u ON m.user_id = u.id
-     WHERE m.channel_id = ? AND m.is_bot = 0
+     WHERE m.channel_id = ?
      ORDER BY m.created_at DESC LIMIT ?`,
     [channelId, limit]
   );

@@ -101,11 +101,12 @@ Discord「日本AI開発者互助会」サーバー
     prompt += `\n\n## 話し相手の情報\n${personalityCtx}`;
   }
 
-  // チャンネル直近の会話コンテキスト
+  // チャンネル直近の会話コンテキスト（Bot発言含む）
   if (channelHistory && channelHistory.length > 0) {
-    const historyText = channelHistory.slice(-10).map(m =>
-      `${m.display_name || 'unknown'}: ${m.content?.substring(0, 150) || ''}`
-    ).join('\n');
+    const historyText = channelHistory.slice(-15).map(m => {
+      const name = m.is_bot ? 'WISE(あなた)' : (m.display_name || 'unknown');
+      return `${name}: ${m.content?.substring(0, 200) || ''}`;
+    }).join('\n');
     prompt += `\n\n## チャンネルの直近の会話\n${historyText}`;
   }
 

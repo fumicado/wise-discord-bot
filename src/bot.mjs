@@ -235,12 +235,15 @@ client.on(Events.MessageCreate, async (message) => {
       // 自己紹介への自動返信（LLMでパーソナライズ）
       try {
         await message.channel.sendTyping();
+        const channelHistory = await db.getChannelHistory(message.channelId, 15);
+
         const introPrompt = `以下はDiscordサーバー「日本AI開発者互助会」の#自己紹介チャンネルに投稿された自己紹介です。執事として温かく歓迎してください。
 
 相手の自己紹介の内容（名前、仕事、興味分野など）に触れて、パーソナライズされた歓迎メッセージを送ってください。
 - 3〜5行程度の短めで温かい返信
 - 相手の興味分野に関連するチャンネルやフォーラムがあれば案内
 - 執事口調（〜でございます、〜ですぞ）
+- 直前に他の方の自己紹介と歓迎がある場合、同じ文面にならないよう変化をつけること
 
 自己紹介内容:
 ${message.content.substring(0, 500)}`;
@@ -250,7 +253,7 @@ ${message.content.substring(0, 500)}`;
           username: message.author.displayName || message.author.username,
           channelId: message.channelId,
           channelName: message.channel.name,
-          channelHistory: [],
+          channelHistory,
           userLevel: getUserLevel(message.member),
         });
 
