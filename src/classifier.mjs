@@ -1,15 +1,13 @@
 /**
- * Message Classifier — GLM-4-flash 汎用メッセージ意図分類
+ * Message Classifier — glm-4.5-air via Z.AI (Anthropic互換API)
  *
  * チャンネル固有の自動行動トリガーに使う汎用分類器。
  * 例: #自己紹介 → intent="self_introduction" → 自動返信
  *     #質問     → intent="question"           → 自動回答
- *
- * GLM-4-flashで安価に分類（sanitizerと同じパターン）。
  */
 
-const ZAI_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
-const CLASSIFY_MODEL = 'glm-4-flash';
+const ZAI_API_URL = 'https://api.z.ai/api/anthropic/v1/messages';
+const CLASSIFY_MODEL = 'glm-4.5-air';
 
 // 有効な意図カテゴリ
 const VALID_INTENTS = [
@@ -27,12 +25,12 @@ const VALID_INTENTS = [
  *
  * @param {string} content - メッセージ本文
  * @param {object} [context] - { channelName }
- * @returns {Promise<{ intent: string, confidence: number }>}
+ * @returns {Promise<string>} intent文字列（VALID_INTENTSのいずれか）
  */
 export async function classifyMessage(content, context = {}) {
   const apiKey = process.env.ZAI_API_KEY;
   if (!apiKey || !content || content.length < 5) {
-    return { intent: 'other', confidence: 0 };
+    return 'other';
   }
 
   try {
@@ -40,15 +38,14 @@ export async function classifyMessage(content, context = {}) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
         model: CLASSIFY_MODEL,
-        messages: [
-          {
-            role: 'system',
-            content: `あなたはDiscordメッセージの意図分類器です。
-メッセージの意図を以下のカテゴリから1つ選んでください。
+        max_tokens: 30,
+        system: `あなたはDiscordメッセージの意図分類器です。
+メッセージの意図を以下のカテゴリから1つだけ選び、そのカテゴリ名のみを回答してください。
 
 カテゴリ:
 - self_introduction: 自己紹介（名前・経歴・興味分野などを含む自己紹介文）
@@ -61,42 +58,29 @@ export async function classifyMessage(content, context = {}) {
 
 チャンネル: #${context.channelName || '不明'}
 
-JSON形式で回答: {"intent":"カテゴリ名","confidence":0.0〜1.0}
-回答はJSONのみ。`,
-          },
-          {
-            role: 'user',
-            content: content.substring(0, 500),
-          },
+カテゴリ名のみ回答。説明不要。`,
+        messages: [
+          { role: 'user', content: content.substring(0, 500) },
         ],
-        max_tokens: 50,
-        temperature: 0,
       }),
     });
 
     if (!res.ok) {
-      console.warn('[Classifier] API error:', res.status);
-      return { intent: 'other', confidence: 0 };
+      const errBody = await res.text().catch(() => '');
+      console.warn(`[Classifier] API error: ${res.status} ${errBody.substring(0, 100)}`);
+      return 'other';
     }
 
     const data = await res.json();
-    const text = data.choices?.[0]?.message?.content?.trim() || '';
+    const text = (data.content?.[0]?.text || '').trim().toLowerCase();
 
-    try {
-      const result = JSON.parse(text);
-      const intent = VALID_INTENTS.includes(result.intent) ? result.intent : 'other';
-      const confidence = typeof result.confidence === 'number'
-        ? Math.max(0, Math.min(1, result.confidence))
-        : 0.5;
+    // レスポンスからintentを抽出（余計なテキストが混じっても対応）
+    const intent = VALID_INTENTS.find(i => text.includes(i)) || 'other';
 
-      console.log(`[Classifier] #${context.channelName || '?'}: "${content.substring(0, 40)}..." → ${intent} (${confidence})`);
-      return { intent, confidence };
-    } catch {
-      console.warn('[Classifier] JSON parse failed:', text);
-      return { intent: 'other', confidence: 0 };
-    }
+    console.log(`[Classifier] #${context.channelName || '?'}: "${content.substring(0, 40)}..." → ${intent}`);
+    return intent;
   } catch (err) {
     console.warn('[Classifier] Error:', err.message);
-    return { intent: 'other', confidence: 0 };
+    return 'other';
   }
 }

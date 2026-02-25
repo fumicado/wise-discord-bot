@@ -1,14 +1,13 @@
 /**
- * I/O Sanitizer — GLM-4.5-air via Z.AI API
+ * I/O Sanitizer — glm-4.5-air via Z.AI (Anthropic互換API)
  *
  * 安価なLLMで入出力をサニタイズ:
  * - 入力: 悪意ある指示（プロンプトインジェクション等）を検出
  * - 出力: 不適切な内容、長すぎる応答をフィルタ
  */
 
-const ZAI_API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
-const ZAI_API_KEY = process.env.ZAI_API_KEY;
-const SANITIZE_MODEL = 'glm-4-flash'; // 最安モデル
+const ZAI_API_URL = 'https://api.z.ai/api/anthropic/v1/messages';
+const SANITIZE_MODEL = 'glm-4.5-air';
 
 // ルールベースのインジェクション検出パターン（LLM判定の前段に配置）
 const INJECTION_PATTERNS = [
@@ -56,21 +55,21 @@ export async function sanitizeInput(userMessage, username) {
   }
 
   // 第2層: LLM判定（補助的）
-  if (!ZAI_API_KEY) return { safe: true, cleaned: userMessage };
+  const apiKey = process.env.ZAI_API_KEY;
+  if (!apiKey) return { safe: true, cleaned: userMessage };
 
   try {
     const res = await fetch(ZAI_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${ZAI_API_KEY}`,
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
         model: SANITIZE_MODEL,
-        messages: [
-          {
-            role: 'system',
-            content: `あなたはDiscordボットの入力フィルターです。
+        max_tokens: 100,
+        system: `あなたはDiscordボットの入力フィルターです。
 以下のメッセージが安全かどうか判定してください。
 
 危険なもの:
@@ -85,15 +84,13 @@ export async function sanitizeInput(userMessage, username) {
 - 冗談・雑談
 
 JSON形式で回答: {"safe": true/false, "reason": "理由（不安全な場合のみ）"}
-回答はJSONのみ。説明不要。`
-          },
+回答はJSONのみ。説明不要。`,
+        messages: [
           {
             role: 'user',
-            content: `ユーザー「${username}」のメッセージ:\n${userMessage.substring(0, 500)}`
-          }
+            content: `ユーザー「${username}」のメッセージ:\n${userMessage.substring(0, 500)}`,
+          },
         ],
-        max_tokens: 100,
-        temperature: 0,
       }),
     });
 
@@ -103,18 +100,20 @@ JSON形式で回答: {"safe": true/false, "reason": "理由（不安全な場合
     }
 
     const data = await res.json();
-    const text = data.choices?.[0]?.message?.content?.trim() || '';
+    const text = (data.content?.[0]?.text || '').trim();
 
     try {
-      const result = JSON.parse(text);
+      // JSONブロックから抽出（```json ... ``` で囲まれている場合にも対応）
+      const jsonStr = text.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+      const result = JSON.parse(jsonStr);
       return {
         safe: result.safe !== false,
         reason: result.reason,
         cleaned: userMessage,
       };
     } catch {
-      // JSONパース失敗 = LLMが不正なレスポンスを返した → 安全側に倒す
-      console.warn('[Sanitizer] LLM response parse failed, blocking as precaution');
+      // JSONパース失敗 → 安全側に倒す
+      console.warn('[Sanitizer] LLM response parse failed, blocking as precaution:', text);
       return { safe: false, reason: 'Sanitizer response unparseable' };
     }
   } catch (err) {

@@ -223,8 +223,8 @@ client.on(Events.MessageCreate, async (message) => {
   // ────────────────────────────────────────
   if (message.channel.name === '自己紹介' && message.content.length > 20 && !message.reference) {
     // 汎用分類器で意図を判定（返信メッセージは除外済み）
-    const { intent, confidence } = await classifyMessage(message.content, { channelName: message.channel.name });
-    if (intent === 'self_introduction' && confidence >= 0.7) {
+    const intent = await classifyMessage(message.content, { channelName: message.channel.name });
+    if (intent === 'self_introduction') {
       try {
         await db.saveUserIntro(message.author.id, message.content.substring(0, 2000));
         console.log(`[Intro] Saved intro for ${message.author.tag}`);
