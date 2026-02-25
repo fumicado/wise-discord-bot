@@ -7,6 +7,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import * as db from './db.mjs';
 import { getPersonalityContext } from './personality.mjs';
+import { getAdminToolSpec } from './discord-admin.mjs';
 
 const MODEL_ID = process.env.CLAUDE_MODEL || 'glm-5';
 const MAX_TURNS = parseInt(process.env.MAX_TURNS || '30');
@@ -80,7 +81,11 @@ Discord「日本AI開発者互助会」サーバー
 この方は${userLevel === 'owner' ? 'サーバーオーナー' : '管理者'}です。
 - 技術的な深い議論に対応してください。
 - Botの内部動作やアーキテクチャに関する質問にも答えてOKです（APIキー等の秘密情報は除く）。
-- Issue作成やdev指示などの管理コマンドの使い方を案内できます。`;
+- Issue作成やdev指示などの管理コマンドの使い方を案内できます。
+- **この方はサーバー管理操作を指示できます。**`;
+
+    // admin以上にはサーバー管理ツール仕様を注入
+    prompt += getAdminToolSpec();
   } else if (userLevel === 'core') {
     prompt += `\n\n## 話し相手の権限
 この方はコアメンバーです。

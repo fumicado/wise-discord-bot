@@ -25,6 +25,7 @@ import { enqueueMessage, startFlushTimer } from './embedding.mjs';
 import { searchMessages, formatSearchResults } from './discord-search.mjs';
 import { getUserLevel, hasPermission, getPermissionDeniedMessage, getPermissionContext } from './permissions.mjs';
 import { parseIssueCommand, createIssue, runDevPipeline, formatIssueCreated, formatPRCreated } from './github-dev.mjs';
+import { extractActions, executeActions } from './discord-admin.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -440,8 +441,22 @@ ${message.content.substring(0, 500)}`;
       userLevel,
     }, onProgress);
 
+    // ────────────────────────────────────────
+    // 6a. アクションタグ検出・実行（admin権限時のみ）
+    // ────────────────────────────────────────
+    let finalResponse = response;
+    if (userLevel === 'owner' || userLevel === 'admin') {
+      const { actions, cleanText } = extractActions(response);
+      if (actions.length > 0) {
+        console.log(`[Admin] ${actions.length} action(s) detected from ${message.author.tag}`);
+        const results = await executeActions(message.guild, actions);
+        // アクション結果をメッセージ末尾に追記
+        finalResponse = cleanText + '\n\n' + results.join('\n');
+      }
+    }
+
     // 出力サニタイズ
-    const sanitized = await sanitizeOutput(response);
+    const sanitized = await sanitizeOutput(finalResponse);
 
     // 最終応答: 途中メッセージがあれば編集、なければ新規送信
     if (sanitized) {
