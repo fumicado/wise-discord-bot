@@ -4,6 +4,7 @@
  * wise-line-botのclaude-handler.tsパターンをDiscord用に移植。
  * query()でAgent SDKを呼び出し、セッション管理付きでAI応答を生成。
  */
+import path from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import * as db from './db.mjs';
 import { getPersonalityContext } from './personality.mjs';
@@ -11,7 +12,11 @@ import { getAdminToolSpec } from './discord-admin.mjs';
 
 const MODEL_ID = process.env.CLAUDE_MODEL || 'glm-5';
 const MAX_TURNS = parseInt(process.env.MAX_TURNS || '30');
-const WORK_DIR = process.env.WORK_DIR || '/var/www/wise/workspace/wise-discord-bot';
+// bot自身のディレクトリ（ディレクトリ8区分: 新 core/wise-discord-bot、旧 workspace/wise-discord-bot）
+// 環境変数未設定時は現行パスにフォールバック = 挙動不変
+const WORK_DIR = process.env.CORE_DIR
+  ? path.join(process.env.CORE_DIR, 'wise-discord-bot')
+  : (process.env.WORK_DIR || '/var/www/wise/workspace/wise-discord-bot');
 const AI_BACKEND = process.env.AI_BACKEND || 'glm-5';  // 'glm-5' or 'claude'
 
 // 処理中フラグ（同一ユーザーの多重リクエスト防止）

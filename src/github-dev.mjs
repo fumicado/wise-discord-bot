@@ -9,6 +9,7 @@
  *   @WISE dev #<issue番号>            → Issue→自動実装→PR
  */
 
+import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
@@ -17,7 +18,11 @@ const execFileAsync = promisify(execFile);
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
 const GITHUB_REPO = process.env.GITHUB_REPO || 'fumicado/wise-discord-bot';
 const GITHUB_API = 'https://api.github.com';
-const REPO_DIR = process.env.WORK_DIR || '/var/www/wise/workspace/wise-discord-bot';
+// bot自身のリポジトリ（ディレクトリ8区分: 新 core/wise-discord-bot、旧 workspace/wise-discord-bot）
+// 環境変数未設定時は現行パスにフォールバック = 挙動不変
+const REPO_DIR = process.env.CORE_DIR
+  ? path.join(process.env.CORE_DIR, 'wise-discord-bot')
+  : (process.env.WORK_DIR || '/var/www/wise/workspace/wise-discord-bot');
 
 /**
  * GitHub Issue を作成
